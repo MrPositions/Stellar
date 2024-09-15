@@ -1162,7 +1162,7 @@ async def get_exam_topics(exam):
     )
 
     topics_data = response['choices'][0]['message']['content'].strip()  # Corrected indexing
-    print(topics_data)
+    print("Raw GPT response:",topics_data)
     topics = {}
 
     # Use regex to extract the topic and percentage from each line
@@ -1272,16 +1272,16 @@ async def generate_quiz(exam, num_questions, user_id, is_custom=False):
 
     return quiz_questions
 
-# Guide command to explain bot functionality
+# Guide_command to explain bot functionality
 @bot.command(name="guide")
 async def guide(ctx):
     guide_message = (
         "Greetings, aspiring cloud expert! 🌥️ I'm Stellar, your quiz companion. Here's how to use me:\n"
-        "1. Use `stellar_start_quiz` to begin your journey.\n"
-        "2. Select your Cloud Service Provider (CSP) from the list. To achieve this, you must type stellar_select <number_of_selected_choice>\n"
-        "3. Choose the certification you're preparing for. For this purpose, type stellar_select <number_of_selected_choice>\n"
-        "4. Specify how many questions you'd like (1-120). To do so, type stellar_select <selected_number>\n"
-        "5. Answer each question by typing the number of your answer choice in this format: stellar_ans <number_of_selected_choice>.\n"
+        "1. Use `stellar_sq` to begin your journey.\n"
+        "2. Select your Cloud Service Provider (CSP) from the list. To achieve this, you must type `stellar_select <number_of_selected_choice>`.\n"
+        "3. Choose the certification you're preparing for. For this purpose, type `stellar_select <number_of_selected_choice>`.\n"
+        "4. Specify how many questions you'd like (1-120). To do so, type `stellar_select <selected_number>`.\n"
+        "5. Answer each question by typing the number of your answer choice in this format: `stellar_ans <number_of_selected_choice>`.\n"
         "6. At the end, I'll reveal your score and a detailed breakdown of your answers.\n"
         "Just call my name, and I'll be here to assist you!"
     )
@@ -1498,7 +1498,7 @@ async def ask_question(ctx, user_id):
 async def answer(ctx, selection: int):
     user_id = ctx.author.id
     if user_id not in user_data or "step" not in user_data[user_id] or user_data[user_id]["step"] != "quiz_in_progress":
-        await ctx.send("You are not currently taking a quiz. Start one using `stellar_start_quiz`.")
+        await ctx.send("You are not currently taking a quiz. Start one using `stellar_sq`.")
         return
 
     if user_id in active_quizzes:
@@ -1548,7 +1548,7 @@ async def answer(ctx, selection: int):
 # Function to display results after the quiz is completed
 async def show_results(ctx, user_id):
     # Ensure user has results stored in their data
-    if "results" in user_data[user_id]:
+    if user_id in user_data and "results" in user_data[user_id]:
         results = user_data[user_id]["results"]
         correct_answers = sum(1 for result in results if result["is_correct"])
         total_questions = len(results)
@@ -1566,11 +1566,12 @@ async def show_results(ctx, user_id):
                 topic_correct_counts[topic]["correct"] += 1
 
         # Create a detailed breakdown of the user's answers
-        result_message = f"Quiz complete! 🎉 You scored {correct_answers}/{total_questions} ({score_percentage:.2f}%)\n"
-        result_message += "Here's a breakdown of your answers:\n"
+        summary = []
+        summary.append(f"Quiz complete! 🎉 You scored {correct_answers}/{total_questions} ({score_percentage:.2f}%)\n")
+        summary.append("Here's a breakdown of your answers:\n")
 
         for i, result in enumerate(results, 1):
-            result_message += (
+            summary.append(
                 f"**Q{i}:** {result['question']}\n"
                 f"Your answer: {result['selected_answer']}\n"
                 f"Correct answer: {result['correct_answer']}\n"
@@ -1578,13 +1579,24 @@ async def show_results(ctx, user_id):
             )
 
         # Add per-topic performance
-        result_message += "\n**Performance by Topic:**\n"
+        summary.append("\n**Performance by Topic:**\n")
         for topic, count in topic_correct_counts.items():
             topic_score = (count["correct"] / count["total"]) * 100
-            result_message += f"{topic}: {count['correct']}/{count['total']} correct ({topic_score:.2f}%)\n"
+            summary.append(f"{topic}: {count['correct']}/{count['total']} correct ({topic_score:.2f}%)\n")
 
-        # Send the result message to the Discord channel
-        await ctx.send(result_message)
+        # Convert summary list to string
+        result_text = "\n".join(summary)
+
+        # Create a temporary file with the result using utf-8 encoding
+        file_name = f"{ctx.author.name}_quiz_results.txt"
+        with open(file_name, "w", encoding="utf-8") as result_file:
+            result_file.write(result_text)
+
+        # Send the file in Discord
+        await ctx.send(file=discord.File(file_name))
+
+        # Delete the file from local storage after sending
+        os.remove(file_name)
 
         # Prepare results for JSON storage
         data = load_json()
@@ -1609,6 +1621,7 @@ async def show_results(ctx, user_id):
 
         # Clear the user's data from user_data to free up memory
         del user_data[user_id]
-
+    else:
+        await ctx.send("No results found for this quiz.")
 # Run the bot
 bot.run(BOT_TOKEN)  # Replace with your Discord bot token
