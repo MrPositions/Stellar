@@ -1165,15 +1165,21 @@ async def get_exam_topics(exam):
     print(topics_data)
     topics = {}
 
-    # Parse the topics_data to get topics and percentages (assumed format)
+    # Use regex to extract the topic and percentage from each line
     for line in topics_data.split('\n'):
-        if ':' in line:
-            topic, percentage = line.split(':')
-            topics[topic.strip()] = int(percentage.strip())
-    print(topics)
+        match = re.search(r'(.+?)\s*\((\d+)%\)', line)
+        if match:
+            topic = match.group(1).strip()
+            percentage = int(match.group(2).strip())
+            topics[topic] = percentage
+        else:
+            print(f"Line does not match expected format: {line}")  # Warn if the line is not in expected format
 
+    if not topics:
+        print("No valid topics found. Returning empty dictionary.")
+
+    print(f"Parsed topics: {topics}")
     return topics
-
 
 # Function to generate a question using GPT
 async def generate_gpt_question(topic):
