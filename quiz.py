@@ -1510,7 +1510,7 @@ async def answer(ctx, selection: int):
             correct_answer = current_question["correct_answer"]
             topic = current_question["topic"]  # Get the question's topic
 
-            selected_answer = choices[selection - 1]  # User's selected answer
+            selected_answer = choices[selection - 1].strip()  # User's selected answer
             is_correct = selected_answer in correct_answer
 
             # Save the answer result
