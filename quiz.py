@@ -1151,41 +1151,56 @@ def save_json(data):
         json.dump(data, file, indent=4)
 
 
-# A function to generate quiz topics and their percentages using GPT
+# Function to get exam topics and services
 async def get_exam_topics(exam):
-    prompt = f"Provide a list of topics covered in the {exam} certification exam, along with their corresponding percentage distribution."
+    # Updated prompt to explicitly ask for all services
+    prompt = (f"Provide a detailed and complete list of topics covered in the {exam} certification exam, along with their corresponding percentage distribution and all web services linked with each topic. Include every AWS service that is part of each topic, without skipping even a single topic or a single service. Make sure every single related topic and service is mentioned and avoid using etc.")
 
     response = await openai.ChatCompletion.acreate(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}],
-        max_tokens=150
+        max_tokens=700
     )
 
-    topics_data = response['choices'][0]['message']['content'].strip()  # Corrected indexing
-    print("Raw GPT response:",topics_data)
+    topics_data = response['choices'][0]['message']['content'].strip()
+    print("Raw GPT response:", topics_data)
     topics = {}
 
-    # Use regex to extract the topic and percentage from each line
-    for line in topics_data.split('\n'):
-        match = re.search(r'(.+?)\s*\((\d+)%\)', line)
-        if match:
-            topic = match.group(1).strip()
-            percentage = int(match.group(2).strip())
-            topics[topic] = percentage
-        else:
-            print(f"Line does not match expected format: {line}")  # Warn if the line is not in expected format
+    # Split the response into lines
+    lines = topics_data.split('\n')
+    current_topic = None
 
+    for line in lines:
+        # Check if the line matches a main topic format (e.g., 1. Cloud Concepts (28%))
+        main_topic_match = re.match(r'^\d+\.\s*(.+?)\s*\((\d+)%\)', line)
+        if main_topic_match:
+            current_topic = main_topic_match.group(1).strip()
+            percentage = int(main_topic_match.group(2).strip())
+            topics[current_topic] = {
+                'percentage': percentage,
+                'services': []
+            }
+        elif current_topic:
+            # Check if the line contains AWS services (starting with '-')
+            if line.strip().startswith('-'):
+                # If the line starts with '-', it's a service
+                service_name = line.strip().lstrip('- ').strip()
+                if service_name:  # Only add non-empty service names
+                    topics[current_topic]['services'].append(service_name)
+
+    # If no valid topics were found
     if not topics:
         print("No valid topics found. Returning empty dictionary.")
 
     print(f"Parsed topics: {topics}")
     return topics
 
-# Function to generate a question using GPT
-async def generate_gpt_question(topic):
+
+# Function to generate a question based on a service
+async def generate_gpt_question(service):
     messages = [
         {"role": "user",
-         "content": f"Create a multiple-choice question about {topic}. Provide 4 answer choices and specify the correct one."}
+         "content": f"Create a multiple-choice question about the {service} web service. The question should be scenario-based, provide 4 distinct answer choices, and specify the correct answer clearly at the end. Do not include any prefixes like 'Scenario:'."}
     ]
     response = await openai.ChatCompletion.acreate(
         model="gpt-3.5-turbo",
@@ -1193,15 +1208,28 @@ async def generate_gpt_question(topic):
         max_tokens=150
     )
 
-    #question_data = response['choices'][0]['message']['content'].strip().split('\n')  # Corrected indexing
-    text = response['choices'][0]['message']['content']
+    # Check if the response is valid
+    text = response['choices'][0]['message']['content'].strip()
     question_data = re.split('\n+', text)
-    if len(question_data) < 6:
-        raise ValueError("Unexpected response format from OpenAI API")
 
-    question = question_data[0]  # First line is the question
-    choices = question_data[1:5]  # Next four lines are the answer choices
-    correct_answer = question_data[5]  # Last line is the correct answer
+    # Debugging information
+    print("Generated question data:", question_data)
+
+    # Ensure the question_data has enough elements
+    if len(question_data) < 6:
+        print("Unexpected response format from OpenAI API: ", question_data)
+        raise ValueError("The response does not contain enough data.")
+
+    # Combine the question and scenario into one line
+    question = question_data[0]  # The first line should be the scenario and question
+    choices = question_data[1:5]  # The next four lines are the answer choices
+    correct_answer = question_data[5]  # The last line is the correct answer
+
+    # Validate choices length
+    if len(choices) < 4:
+        print("Insufficient choices generated, returning default values.")
+        choices = ["Choice 1", "Choice 2", "Choice 3", "Choice 4"]  # Placeholder choices
+
     return question, choices, correct_answer
 
 
@@ -1215,11 +1243,11 @@ async def generate_quiz(exam, num_questions, user_id, is_custom=False):
 
         # Generate questions for each custom topic
         for topic in custom_topics:
-            # Assume an equal distribution of questions for simplicity
             num_topic_questions = num_questions // len(custom_topics)  # Distribute questions evenly
 
             for _ in range(num_topic_questions):
-                question, choices, answer = await generate_gpt_question(topic)
+                question, choices, answer = await generate_gpt_question(
+                    random.choice(topics[topic]['services']))  # Select random service
                 quiz_questions.append({"question": question, "choices": choices, "answer": answer, "topic": topic})
 
         # Check if there are any remaining questions to fill
@@ -1229,24 +1257,27 @@ async def generate_quiz(exam, num_questions, user_id, is_custom=False):
             random_topics = random.choices(all_topics, k=remaining_questions)
 
             for topic in random_topics:
-                question, choices, answer = await generate_gpt_question(topic)
+                question, choices, answer = await generate_gpt_question(
+                    random.choice(topics[topic]['services']))  # Select random service
                 quiz_questions.append({"question": question, "choices": choices, "answer": answer, "topic": topic})
     else:
         # For standard exams, get topics and their percentages
         topics = await get_exam_topics(exam)
-        print("got topics")
+        print("Got topics")
         print(topics)
-        print(f"exam: {exam}")
+        print(f"Exam: {exam}")
+
         # Store topic percentages temporarily
         topic_percentages = {}
-        for topic, percentage in topics.items():
-            print(f"topic: {topic}, percent: {percentage}")
+        for topic, info in topics.items():
+            percentage = info["percentage"]
             num_topic_questions = int((percentage / 100) * num_questions)
             topic_percentages[topic] = percentage  # Store the topic percentage
-            print(f"questions: {num_topic_questions}")
+            print(f"Topic: {topic}, Percent: {percentage}, Questions: {num_topic_questions}")
 
             for _ in range(num_topic_questions):
-                question, choices, answer = await generate_gpt_question(topic)
+                question, choices, answer = await generate_gpt_question(
+                    random.choice(info['services']))  # Select random service
                 quiz_questions.append({"question": question, "choices": choices, "answer": answer, "topic": topic})
 
         # Fill remaining questions randomly from the topics
@@ -1256,7 +1287,8 @@ async def generate_quiz(exam, num_questions, user_id, is_custom=False):
             random_topics = random.choices(all_topics, k=remaining_questions)
 
             for topic in random_topics:
-                question, choices, answer = await generate_gpt_question(topic)
+                question, choices, answer = await generate_gpt_question(
+                    random.choice(topics[topic]['services']))  # Select random service
                 quiz_questions.append({"question": question, "choices": choices, "answer": answer, "topic": topic})
 
     random.shuffle(quiz_questions)  # Shuffle to mix topics
@@ -1271,6 +1303,7 @@ async def generate_quiz(exam, num_questions, user_id, is_custom=False):
     }
 
     return quiz_questions
+
 
 # Guide_command to explain bot functionality
 @bot.command(name="guide")
