@@ -1199,8 +1199,18 @@ async def get_exam_topics(exam):
 # Function to generate a question based on a service
 async def generate_gpt_question(service):
     messages = [
-        {"role": "user",
-         "content": f"Create a multiple-choice question about the {service} web service. The question should be scenario-based, provide 4 distinct answer choices, and specify the correct answer clearly at the end. Do not include any prefixes like 'Scenario:'."}
+        {
+            "role": "user",
+            "content": f"""
+                    Create a multiple-choice question about the {service} web service that resembles an actual certification exam question. 
+                    - The question should be realistic, scenario-based, and related to practical applications of the {service} web service.
+                    - Provide 4 distinct answer choices where one is the correct answer, and the other three are plausible but incorrect (common misconceptions or related services).
+                    - Avoid including the service name in the answer choices unless necessary.
+                    - Use industry-specific terminology and align the question with current best practices for using {service} in a real-world AWS environment.
+                    - Do not include any prefixes like 'Question:', 'Scenario:', or similar. Just write the question and choices directly.
+                    - Clearly specify the correct answer at the end.
+                """
+        }
     ]
     response = await openai.ChatCompletion.acreate(
         model="gpt-3.5-turbo",
