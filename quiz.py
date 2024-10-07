@@ -8,6 +8,8 @@ import openai
 import asyncio
 import re
 import unicodedata
+from datetime import datetime, timedelta
+
 def show_invisible_characters(s):
     for c in s:
         print(ord(c), end=' ')
@@ -1150,12 +1152,54 @@ def save_json(data):
     with open(json_file, 'w') as file:
         json.dump(data, file, indent=4)
 
+CACHE_FILE = 'exam_topics_cache.json'
+EXPIRY_DAYS = 30  # Number of days after which to refresh the cache
 
-# Function to get exam topics and services
+# Function to load the cache from a JSON file
+def load_cache():
+    if os.path.exists(CACHE_FILE):
+        with open(CACHE_FILE, 'r') as f:
+            return json.load(f)
+    return {}
+
+# Function to save the cache to a JSON file
+def save_cache(cache):
+    with open(CACHE_FILE, 'w') as f:
+        json.dump(cache, f, indent=4)
+
+# Function to check if cached data is expired (older than 30 days)
+def is_cache_expired(cached_entry):
+    if 'timestamp' not in cached_entry:
+        return True  # If there's no timestamp, consider the cache expired
+
+    cache_time = datetime.strptime(cached_entry['timestamp'], "%Y-%m-%d")
+    return datetime.now() - cache_time > timedelta(days=EXPIRY_DAYS)
+
+
+# Function to get exam topics and services (with caching and expiry logic)
 async def get_exam_topics(exam):
-    # Updated prompt to explicitly ask for all services
-    prompt = (f"Provide a detailed and complete list of topics covered in the {exam} certification exam, along with their corresponding percentage distribution and all web services linked with each topic. Include every AWS service that is part of each topic, without skipping even a single topic or a single service. Make sure every single related topic and service is mentioned and avoid using etc.")
+    # Fetch the selected CSP based on the exam
+    selected_csp = next((csp for csp, exams in csp_certifications.items() if exam in exams), None)
 
+    if selected_csp is None:
+        print(f"No CSP found for exam: {exam}")
+        return {}
+
+    cache = load_cache()
+
+    # Check if the exam already exists in the cache and if it's still valid (not expired)
+    if selected_csp in cache and exam in cache[selected_csp] and not is_cache_expired(cache[selected_csp][exam]):
+        print(f"Cache hit for exam: {exam} under CSP: {selected_csp}")
+        return cache[selected_csp][exam]['data']['topics']  # Return only the topics part
+
+    # If cache is expired or not found, fetch new data from GPT
+    print(f"Fetching new data for exam: {exam} under CSP: {selected_csp}")
+    prompt = (f"Provide a detailed and complete list of topics covered in the {exam} certification exam for {selected_csp}, "
+              "along with their corresponding percentage distribution and all web services linked with each topic. "
+              "Include every relevant service that is part of each topic, without skipping even a single topic or a single service. "
+              "Make sure every single related topic and service is mentioned and avoid using etc.")
+
+    # Make the OpenAI API call
     response = await openai.ChatCompletion.acreate(
         model="gpt-3.5-turbo",
         messages=[{"role": "user", "content": prompt}],
@@ -1166,47 +1210,55 @@ async def get_exam_topics(exam):
     print("Raw GPT response:", topics_data)
     topics = {}
 
-    # Split the response into lines
+    # Split the response into lines and parse it
     lines = topics_data.split('\n')
     current_topic = None
-
     for line in lines:
         # Check if the line matches a main topic format (e.g., 1. Cloud Concepts (28%))
         main_topic_match = re.match(r'^\d+\.\s*(.+?)\s*\((\d+)%\)', line)
         if main_topic_match:
             current_topic = main_topic_match.group(1).strip()
             percentage = int(main_topic_match.group(2).strip())
-            topics[current_topic] = {
-                'percentage': percentage,
-                'services': []
-            }
-        elif current_topic:
-            # Check if the line contains AWS services (starting with '-')
-            if line.strip().startswith('-'):
-                # If the line starts with '-', it's a service
-                service_name = line.strip().lstrip('- ').strip()
-                if service_name:  # Only add non-empty service names
-                    topics[current_topic]['services'].append(service_name)
+            topics[current_topic] = {'percentage': percentage, 'services': []}
+        elif current_topic and line.strip().startswith('-'):
+            # If the line starts with '-', it's a service
+            service_name = line.strip().lstrip('- ').strip()
+            if service_name:  # Only add non-empty service names
+                topics[current_topic]['services'].append(service_name)
 
     # If no valid topics were found
     if not topics:
         print("No valid topics found. Returning empty dictionary.")
+        return {}
+
+    # Update cache with the new data in the desired format
+    if selected_csp not in cache:
+        cache[selected_csp] = {}  # Create a new entry for the CSP if it doesn't exist
+
+    # Store the topics under the selected CSP and exam
+    cache[selected_csp][exam] = {
+        'data': {
+            'exam': exam,
+            'topics': topics
+        },
+        'timestamp': datetime.now().strftime("%Y-%m-%d")
+    }
+    save_cache(cache)
 
     print(f"Parsed topics: {topics}")
     return topics
 
-
 # Function to generate a question based on a service
-async def generate_gpt_question(service):
+async def generate_gpt_question(service, csp):
     messages = [
         {
             "role": "user",
             "content": f"""
-                    Create a multiple-choice question about the {service} web service that resembles an actual certification exam question. 
+                    Create a multiple-choice question about the {service} web service related to {csp} that resembles an actual certification exam question. 
                     - The question should be realistic, scenario-based, and related to practical applications of the {service} web service.
                     - Provide 4 distinct answer choices where one is the correct answer, and the other three are plausible but incorrect (common misconceptions or related services).
                     - Avoid including the service name in the answer choices unless necessary.
-                    - Use industry-specific terminology and align the question with current best practices for using {service} in a real-world AWS environment.
+                    - Use industry-specific terminology and align the question with current best practices for using {service} in a real-world {csp} environment.
                     - Do not include any prefixes like 'Question:', 'Scenario:', or similar. Just write the question and choices directly.
                     - Clearly specify the correct answer at the end.
                 """
@@ -1242,22 +1294,28 @@ async def generate_gpt_question(service):
 
     return question, choices, correct_answer
 
-
 # Function to generate a quiz based on user selection
 async def generate_quiz(exam, num_questions, user_id, is_custom=False):
     quiz_questions = []
 
+    # Load cache at the start of the function
+    cache = load_cache()
+
+    # Fetch the selected CSP based on the exam
+    selected_csp = next((csp for csp, exams in csp_certifications.items() if exam in exams), None)
+
     if is_custom:
-        # If custom, use the user's selected custom topics
-        custom_topics = user_data[user_id]["custom_topics"]  # Get custom topics from user data
+        # If custom, fetch the custom topics from the cache
+        cached_topics = cache.get('data', {}).get('topics', {})
+        custom_topics = list(cached_topics.keys())  # Get all topics from the cache
 
         # Generate questions for each custom topic
         for topic in custom_topics:
             num_topic_questions = num_questions // len(custom_topics)  # Distribute questions evenly
 
             for _ in range(num_topic_questions):
-                question, choices, answer = await generate_gpt_question(
-                    random.choice(topics[topic]['services']))  # Select random service
+                service = random.choice(cached_topics[topic]['services'])  # Select random service
+                question, choices, answer = await generate_gpt_question(service, selected_csp)  # Pass csp
                 quiz_questions.append({"question": question, "choices": choices, "answer": answer, "topic": topic})
 
         # Check if there are any remaining questions to fill
@@ -1267,8 +1325,8 @@ async def generate_quiz(exam, num_questions, user_id, is_custom=False):
             random_topics = random.choices(all_topics, k=remaining_questions)
 
             for topic in random_topics:
-                question, choices, answer = await generate_gpt_question(
-                    random.choice(topics[topic]['services']))  # Select random service
+                service = random.choice(cached_topics[topic]['services'])  # Select random service
+                question, choices, answer = await generate_gpt_question(service, selected_csp)  # Pass csp
                 quiz_questions.append({"question": question, "choices": choices, "answer": answer, "topic": topic})
     else:
         # For standard exams, get topics and their percentages
@@ -1280,15 +1338,29 @@ async def generate_quiz(exam, num_questions, user_id, is_custom=False):
         # Store topic percentages temporarily
         topic_percentages = {}
         for topic, info in topics.items():
-            percentage = info["percentage"]
-            num_topic_questions = int((percentage / 100) * num_questions)
-            topic_percentages[topic] = percentage  # Store the topic percentage
-            print(f"Topic: {topic}, Percent: {percentage}, Questions: {num_topic_questions}")
+            num_topic_questions = 0  # Initialize variable to ensure it's defined
 
-            for _ in range(num_topic_questions):
-                question, choices, answer = await generate_gpt_question(
-                    random.choice(info['services']))  # Select random service
-                quiz_questions.append({"question": question, "choices": choices, "answer": answer, "topic": topic})
+            if isinstance(info, dict) and "percentage" in info:
+                percentage = info["percentage"]
+                if not isinstance(percentage, (int, float)):  # Ensure percentage is a number
+                    print(f"Invalid percentage value for topic '{topic}': {percentage}. Expected a number.")
+                    continue
+
+                num_topic_questions = int((percentage / 100) * num_questions)
+                topic_percentages[topic] = {
+                    'percentage': percentage,  # Store the topic percentage
+                    'num_questions': num_topic_questions  # Store the number of questions for this topic
+                }
+                print(f"Topic: {topic}, Percent: {percentage}, Questions: {num_topic_questions}")
+
+                # Generate questions based on the calculated num_topic_questions
+                for _ in range(num_topic_questions):
+                    service = random.choice(info['services'])  # Select random service
+                    question, choices, answer = await generate_gpt_question(service, selected_csp)  # Pass csp
+                    quiz_questions.append({"question": question, "choices": choices, "answer": answer, "topic": topic})
+
+            else:
+                print(f"Invalid info structure for topic: {topic}. Expected a dict with 'percentage'.")
 
         # Fill remaining questions randomly from the topics
         remaining_questions = num_questions - len(quiz_questions)
@@ -1297,8 +1369,8 @@ async def generate_quiz(exam, num_questions, user_id, is_custom=False):
             random_topics = random.choices(all_topics, k=remaining_questions)
 
             for topic in random_topics:
-                question, choices, answer = await generate_gpt_question(
-                    random.choice(topics[topic]['services']))  # Select random service
+                service = random.choice(topics[topic]['services'])  # Select random service
+                question, choices, answer = await generate_gpt_question(service, selected_csp)  # Pass csp
                 quiz_questions.append({"question": question, "choices": choices, "answer": answer, "topic": topic})
 
     random.shuffle(quiz_questions)  # Shuffle to mix topics
@@ -1313,7 +1385,6 @@ async def generate_quiz(exam, num_questions, user_id, is_custom=False):
     }
 
     return quiz_questions
-
 
 # Guide_command to explain bot functionality
 @bot.command(name="guide")
