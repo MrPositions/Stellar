@@ -1194,10 +1194,23 @@ async def get_exam_topics(exam):
 
     # If cache is expired or not found, fetch new data from GPT
     print(f"Fetching new data for exam: {exam} under CSP: {selected_csp}")
-    prompt = (f"Provide a detailed and complete list of topics covered in the {exam} certification exam for {selected_csp}, "
-              "along with their corresponding percentage distribution and all web services linked with each topic. "
-              "Include every relevant service that is part of each topic, without skipping even a single topic or a single service. "
-              "Make sure every single related topic and service is mentioned and avoid using etc.")
+    prompt = (f"""
+        Provide a detailed and complete list of topics covered in the {exam} certification exam for {selected_csp}, 
+        along with their corresponding percentage distribution and all web services linked with each topic. 
+        Include every relevant service that is part of each topic, without skipping even a single topic or a single service. 
+        Make sure every single related topic and service is mentioned and avoid using terms like 'etc.'
+
+        The list should follow this specific format:
+
+        1. Main Topic Name (percentage%)
+           - List of services related to this topic, each starting with a hyphen (-) and no additional text or numbering.
+
+        Ensure that:
+        - Each main topic is numbered, followed by the topic name and the percentage in parentheses (e.g., 1. Cloud Concepts (28%)).
+        - Each main topic has a corresponding list of related services, and each service starts with a hyphen (-) followed by the service name, with no other punctuation or symbols.
+        - Do not skip any topics or services, and avoid using terms like 'etc.'
+        - Ensure every topic and service is on its own line and follows the structure above. Avoid any extraneous information or invalid formatting.
+    """)
 
     # Make the OpenAI API call
     response = await openai.ChatCompletion.acreate(
